@@ -302,6 +302,75 @@ void main() {
     expect(store.settings['draft']?['responseModel'], 'main');
   });
 
+  testWidgets('WaveSpeed 创建页读取目录规则并随任务保存选定模型的规则', (tester) async {
+    const model = 'example/new-image';
+    const provider = ProviderConfig(
+      id: 'p1', name: 'WaveSpeed', baseUrl: 'https://api.wavespeed.ai',
+      protocol: ApiProtocol.wavespeed, imageModel: model,
+    );
+    const schema = {
+      'properties': {
+        'prompt': {'type': 'string'},
+        'aspect_ratio': {'type': 'string', 'enum': ['1:1', '8:1']},
+      },
+      'required': ['prompt', 'aspect_ratio'],
+    };
+    final store = _FakeStore(providers: [provider], keys: {'p1': 'test'});
+    store.settings['wavespeedCatalog:p1'] = {
+      'baseUrl': provider.baseUrl,
+      'models': {model: schema},
+    };
+    GenerationInput? submitted;
+    await _pump(tester, store: store, submit: (input) async => submitted = input);
+    await tester.enterText(find.byKey(const ValueKey('generation-prompt')), '测试目录规则');
+    await tester.ensureVisible(find.text('尺寸 自动'));
+    await tester.tap(find.text('尺寸 自动'));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(ChoiceChip, '16:9'), findsNothing);
+    await tester.tap(find.text('更多比例'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ChoiceChip, '8:1'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('完成'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('submit-generation')));
+    await tester.pumpAndSettle();
+    expect(submitted?.params.size, '8:1');
+    expect(submitted?.provider.pluginConfig['wavespeedImageSchema'], schema);
+  });
+
+  testWidgets('切换模型时保留参考图并按新模型检查数量', (tester) async {
+    const banana = 'google/nano-banana-2/edit';
+    const flux = 'wavespeed-ai/flux-2-pro/edit';
+    const provider = ProviderConfig(
+      id: 'p1', name: 'WaveSpeed', baseUrl: 'https://api.wavespeed.ai',
+      protocol: ApiProtocol.wavespeed, imageModel: banana, models: [banana, flux],
+    );
+    final store = _FakeStore(providers: [provider], keys: {'p1': 'test'});
+    store.settings['draft'] = {
+      'references': List.generate(5, (i) => ImageAsset(
+        id: 'ref$i', path: 'assets/${(i + 1).toString().padLeft(64, 'a')}.png',
+        mime: 'image/png', hash: 'ref$i', bytes: 100,
+      ).toJson()),
+    };
+    await _pump(tester, store: store, submit: (_) async {});
+    expect(find.text('5/14'), findsOneWidget);
+    await tester.ensureVisible(find.text('本次生成模型'));
+    await tester.tap(find.text('本次生成模型'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(flux));
+    await tester.pumpAndSettle();
+    expect(find.text('5/3'), findsOneWidget);
+    expect(find.text('当前模型最多支持 3 张参考图'), findsOneWidget);
+    expect(tester.widget<FilledButton>(find.byKey(const ValueKey('submit-generation'))).onPressed, isNull);
+    await tester.ensureVisible(find.text('尺寸 自动'));
+    await tester.tap(find.text('尺寸 自动'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ChoiceChip, '自定义'));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(TextField, '宽（像素）'), findsOneWidget);
+    expect(find.widgetWithText(ChoiceChip, '16:9'), findsNothing);
+  });
   testWidgets('空启用列表阻止生成，旧草稿移除的模型不再提交', (tester) async {
     final provider = ProviderConfig.fromJson({..._provider().toJson(), 'models': ['current'], 'imageModel': 'current'});
     final store = _FakeStore(providers: [provider], keys: {'p1': 'test'});
@@ -574,6 +643,7 @@ void main() {
             name: protocol.label,
             baseUrl: 'https://api.example.com/v1',
             protocol: protocol,
+            imageModel: protocol == ApiProtocol.wavespeed ? 'bytedance/seedream-v5.5/edit' : 'doubao-seedream-5.5',
           ),
         ],
         keys: {'p1': 'test'},
@@ -590,7 +660,7 @@ void main() {
       await openSizes('自动');
       final wide = find.widgetWithText(ChoiceChip, '16:9');
       expect(tester.widget<ChoiceChip>(wide).avatar, isA<SizedBox>());
-      expect(find.text('自定义'), findsNothing);
+      expect(find.text('自定义'), protocol == ApiProtocol.evolink ? findsOneWidget : findsNothing);
       expect(find.text('分辨率档位'), findsNothing);
       await tester.tap(find.text('更多比例'));
       await tester.pumpAndSettle();
@@ -607,6 +677,7 @@ void main() {
       await tester.ensureVisible(done);
       await tester.tap(done);
       await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 500));
       expect(store.settings['draft']!['params']['size'], '21:9');
 
       await openSizes('21:9');

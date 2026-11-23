@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 
 import '../api/openai_client.dart';
+import '../api/async_image_models.dart';
 import '../api/params.dart';
 import '../data/studio_store.dart';
 import '../features/providers/provider_connection.dart';
@@ -79,7 +80,8 @@ class BuiltinProvider implements ProviderExtension {
     required this.protocol,
     required StudioStore store,
     Dio? dio,
-  }) : _dio = dio,
+  }) : _store = store,
+       _dio = dio,
        _client = OpenAiClient(readAsset: store.readAsset, assetLength: store.assetLength, dio: dio);
 
   @override
@@ -89,6 +91,7 @@ class BuiltinProvider implements ProviderExtension {
   final ApiProtocol protocol;
   final OpenAiClient _client;
   final Dio? _dio;
+  final StudioStore _store;
 
   @override
   Stream<GenerationEvent> generate(GenerationInput input, String apiKey) =>
@@ -144,14 +147,7 @@ class BuiltinProvider implements ProviderExtension {
         );
       case ApiProtocol.wavespeed:
       case ApiProtocol.evolink:
-        return GenerationCapabilities(
-          maxReferences: 10,
-          supportsPreview: false,
-          supportsCustomSize: false,
-          qualities: const ['auto', '1K', '1.5K', '2K'],
-          formats: const ['png', 'jpeg'],
-          sizes: aspectRatiosFor(protocol),
-        );
+        return rulesForProvider(_normalizedProvider(provider)).capabilities;
     }
   }
 
@@ -170,12 +166,11 @@ class BuiltinProvider implements ProviderExtension {
     if (params.count < 1 || params.count > 10) {
       throw const FormatException('生成数量需为 1–10');
     }
-    final limit = protocol.isAsync ? 10 : 16;
-    if (routed.references.length > limit) {
-      throw FormatException('参考图最多 $limit 张');
-    }
-    if (protocol.isAsync && (routed.mask != null || routed.markup != null)) {
-      throw const FormatException('当前协议不支持蒙版或标注，请清除编辑图层');
+    final rules = protocol.isAsync ? rulesForProvider(routed.provider) : null;
+    if (rules != null) {
+      rules.validateInput(routed);
+    } else if (routed.references.length > 16) {
+      throw const FormatException('参考图最多 16 张');
     }
     final model = protocol != ApiProtocol.responses
         ? routed.provider.imageModel
@@ -186,7 +181,9 @@ class BuiltinProvider implements ProviderExtension {
       protocol: protocol,
       imageModel: model,
       hasInputImages: routed.references.isNotEmpty,
+      asyncRules: rules,
     );
+    rules?.extensionParams(params, resolved.size);
     return GenerationPlan(
       input: routed.copyWith(
         params: GenerationParams(
@@ -225,6 +222,13 @@ class BuiltinProvider implements ProviderExtension {
       final result = await checker.check(_normalizedProvider(provider), apiKey);
       switch (result.status) {
         case ModelCheckStatus.ok:
+          if (protocol == ApiProtocol.wavespeed) {
+            await _store.saveSetting(waveCatalogKey(provider.id), {
+              'baseUrl': provider.baseUrl,
+              'models': result.imageSchemas,
+            });
+            _store.refresh();
+          }
           return result.models;
         // 没有 /models 端点时保留手工输入，不当作失败。
         case ModelCheckStatus.noModelEndpoint:

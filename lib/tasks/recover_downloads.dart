@@ -28,7 +28,10 @@ Future<int> retrySavedDownloads(StudioStore store, String taskId, {Dio? download
         await tx.delete('settings', where: 'key = ?', whereArgs: [row['key']]);
         if (value['attempt'] == task.attempt) {
           final count = Sqflite.firstIntValue(await tx.rawQuery("SELECT COUNT(*) FROM task_assets WHERE task_id = ? AND role = 'output' AND attempt = ?", [taskId, task.attempt])) ?? 0;
-          final expectedCount = resolveParams(task.input.params, protocol: task.input.provider.protocol, imageModel: task.input.provider.protocol != ApiProtocol.responses ? task.input.provider.imageModel : task.input.provider.toolModel, hasInputImages: task.input.references.isNotEmpty).count;
+          final provider = task.input.provider;
+          final expectedCount = provider.protocol.isAsync
+              ? task.input.params.count.clamp(1, 10)
+              : resolveParams(task.input.params, protocol: provider.protocol, imageModel: provider.protocol == ApiProtocol.responses ? provider.toolModel : provider.imageModel, hasInputImages: task.input.references.isNotEmpty).count;
           await tx.update('tasks', {'status': count >= expectedCount ? 'done' : 'partialError', 'error': count >= expectedCount ? null : '已保存 $count/$expectedCount 张'}, where: 'id = ?', whereArgs: [taskId]);
         }
       });

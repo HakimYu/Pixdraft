@@ -12,6 +12,33 @@ void main() {
   setUp(setUpApiFiles);
   tearDown(tearDownApiFiles);
 
+  test('EvoLink GPT Image 2 分开发送分辨率、画质与蒙版，多张逐次提交', () async {
+    final uploads = ['https://files.evolink.ai/ref.png', 'https://files.evolink.ai/mask.png'];
+    var uploaded = 0;
+    var submitted = 0;
+    final adapter = FakeAdapter((options, _) async {
+      if (options.uri.host == 'files-api.evolink.ai') {
+        return jsonBody({'success': true, 'data': {'file_url': uploads[uploaded++]}});
+      }
+      expect(options.method, 'POST');
+      expect(options.data, {
+        'model': 'gpt-image-2', 'prompt': '猫', 'size': '16:9',
+        'quality': 'high', 'resolution': '2K', 'output_format': 'webp',
+        'background': 'transparent', 'image_urls': [uploads.first],
+        'mask_url': uploads.last,
+      });
+      return jsonBody({'id': 'task-${++submitted}', 'status': 'completed', 'results': ['https://cdn.test/$submitted.webp']});
+    });
+    final result = await drain(clientFor(adapter).generate(testInput(
+      provider: testProvider(protocol: ApiProtocol.evolink, imageModel: 'gpt-image-2'),
+      prompt: '猫', references: [referenceAsset()], mask: maskAsset(),
+      params: const GenerationParams(size: '16:9', quality: 'high', format: 'webp', background: 'transparent', count: 2, extra: {'resolution': '2K'}),
+    ), 'secret'));
+    expect(result.error, isNull);
+    expect(result.ofKind('image'), hasLength(2));
+    expect(uploaded, 2);
+    expect(submitted, 2);
+  });
   for (final protocol in [ApiProtocol.wavespeed, ApiProtocol.evolink]) {
     final wave = protocol == ApiProtocol.wavespeed;
     ProviderConfig provider({int timeout = 900}) => testProvider(

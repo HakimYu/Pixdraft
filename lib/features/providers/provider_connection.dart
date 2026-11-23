@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 
 import '../../api/network_dio.dart';
+import '../../api/async_image_models.dart';
 import '../../models/models.dart';
 
 /// 仅用于检查 `/models` 的可达性，不发起任何生图请求。
@@ -16,11 +17,15 @@ enum ModelCheckStatus {
 }
 
 class ModelCheckResult {
-  const ModelCheckResult(this.status, this.message, {this.models = const []});
+  const ModelCheckResult(this.status, this.message, {
+    this.models = const [],
+    this.imageSchemas = const {},
+  });
 
   final ModelCheckStatus status;
   final String message;
   final List<String> models;
+  final Map<String, dynamic> imageSchemas;
 }
 
 /// 保留用户填写的路径前缀（如 `/openai/v1`）；空路径按 OpenAI 约定补 `/v1`。
@@ -77,10 +82,10 @@ class ProviderModelChecker {
           headers: {if (key.isNotEmpty) 'Authorization': 'Bearer $key'},
         ),
       );
-      return _interpret(response);
+      return _interpret(response, provider.protocol);
     } on DioException catch (error) {
       final response = error.response;
-      if (response != null) return _interpret(response);
+      if (response != null) return _interpret(response, provider.protocol);
       final timedOut =
           error.type == DioExceptionType.connectionTimeout ||
           error.type == DioExceptionType.sendTimeout ||
@@ -92,7 +97,7 @@ class ProviderModelChecker {
     }
   }
 
-  ModelCheckResult _interpret(Response<dynamic> response) {
+  ModelCheckResult _interpret(Response<dynamic> response, ApiProtocol protocol) {
     final code = response.statusCode ?? 0;
     if (code >= 300 && code < 400) {
       return const ModelCheckResult(
@@ -134,16 +139,27 @@ class ProviderModelChecker {
         '服务已响应，但未返回可识别的模型列表；这不代表生图不可用。',
       );
     }
-    final models = [
-      for (final item in list)
-        if (item is Map && item['id'] is String) item['id'] as String,
-    ];
+    final wave = protocol == ApiProtocol.wavespeed;
+    final models = <String>{};
+    final schemas = <String, dynamic>{};
+    for (final item in list.whereType<Map>()) {
+      final waveId = item['model_id'];
+      if (wave && waveId is String) {
+        if (item['type'] != null && !waveImageTypes.contains(item['type'])) continue;
+        models.add(waveId);
+        final schema = waveImageSchema(item);
+        if (schema != null) schemas[waveId] = schema;
+      } else if (item['id'] case final String id) {
+        models.add(id);
+      }
+    }
     return ModelCheckResult(
       ModelCheckStatus.ok,
       models.isEmpty
           ? '连接正常，未返回模型；仅检查了 /models，未发起生图请求。'
           : '连接正常，共 ${models.length} 个模型；仅检查了 /models，未发起生图请求。',
-      models: models,
+      models: models.toList(),
+      imageSchemas: schemas,
     );
   }
 

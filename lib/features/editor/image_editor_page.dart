@@ -24,18 +24,20 @@ class ImageEditorPage extends StatefulWidget {
     required this.source,
     this.initialMask,
     this.initialMarkup,
+    this.maskOnly = false,
   });
 
   final StudioStore store;
   final ImageAsset source;
   final ImageAsset? initialMask, initialMarkup;
+  final bool maskOnly;
 
   @override
   State<ImageEditorPage> createState() => _ImageEditorPageState();
 }
 
 class _ImageEditorPageState extends State<ImageEditorPage> {
-  late final String _draftKey = 'editor:${widget.source.id}';
+  late final String _draftKey = 'editor:${widget.source.id}${widget.maskOnly ? ':mask' : ''}';
   EditorHistory? _history;
   ImageAsset? _existingMask, _existingMarkup;
   Size? _pixels;
@@ -539,6 +541,7 @@ class _ImageEditorPageState extends State<ImageEditorPage> {
                       Icons.crop_free,
                       'editorToolMask',
                     ),
+                    if (!widget.maskOnly)
                     _toolButton(
                       EditorTool.markup,
                       '红线标注',

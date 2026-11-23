@@ -7,6 +7,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 import '../models/models.dart';
+import 'async_image_models.dart';
 import 'api_failure.dart';
 import 'debug_context.dart';
 import 'error_details.dart';
@@ -94,7 +95,14 @@ class OpenAiClient implements GenerationClient {
         run.token.cancel();
       });
 
-      _validate(input);
+      final rules = provider.protocol.isAsync ? rulesForProvider(provider) : null;
+      if (remoteId == null) {
+        if (rules == null) {
+          _validate(input);
+        } else {
+          rules.validateInput(input);
+        }
+      }
       final hasInputImages = input.references.isNotEmpty;
       final model = provider.protocol != ApiProtocol.responses
           ? provider.imageModel
@@ -108,6 +116,8 @@ class OpenAiClient implements GenerationClient {
         protocol: provider.protocol,
         imageModel: model,
         hasInputImages: hasInputImages,
+        asyncRules: rules,
+        recovering: remoteId != null,
       );
       run
         ..params = params
@@ -141,8 +151,8 @@ class OpenAiClient implements GenerationClient {
         if (run.timedOut) throw _timeoutFailure(timeoutSeconds);
 
         run.add(const GenerationEvent('started'));
-        if (provider.protocol.isAsync) {
-          await _runAsync(run, input, apiKey, params, assets);
+        if (rules != null) {
+          await _runAsync(run, input, apiKey, params, assets, rules);
         } else if (provider.protocol == ApiProtocol.images) {
           await _runImages(run, input, apiKey, params, assets);
         } else {
@@ -260,51 +270,53 @@ class OpenAiClient implements GenerationClient {
   }
 
   Future<void> _runAsync(_Run run, GenerationInput input, String apiKey,
-      ResolvedParams params, _Assets assets) async {
+      ResolvedParams params, _Assets assets, AsyncImageRules rules) async {
     final invalid = input.provider.validate();
     if (invalid != null) throw FormatException(invalid);
     final wave = input.provider.protocol == ApiProtocol.wavespeed;
-    if (assets.mask != null || assets.markup != null) {
-      throw const FormatException('当前协议不支持蒙版或标注，请清除编辑图层');
-    }
-    if (assets.references.length > 10) throw const FormatException('参考图最多 10 张');
-    if (wave && run.model.endsWith('/edit') && assets.references.isEmpty) {
-      throw const FormatException('编辑模型至少需要一张参考图');
-    }
     final endpoint = wave ? run.model : 'images/generations';
-    if (wave && !RegExp(r'^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)+$').hasMatch(run.model)) {
+    if (wave && (!RegExp(r'^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)+$').hasMatch(run.model) ||
+        run.model.split('/').any((part) => part == '.' || part == '..'))) {
       throw const FormatException('WaveSpeed 模型 ID 需为完整路径，例如 bytedance/seedream-v5.5/edit');
     }
-    Uri uri(String path) => _asyncUri(run, path);
-    final references = <String>[];
+    final extra = rules.extensionParams(input.params, params.size);
     for (final asset in assets.references) {
-      if (wave) {
-        references.add(imageDataUrl(asset.bytes, asset.mime));
-      } else {
-        if (asset.bytes.length > 30 * 1024 * 1024) throw const FormatException('EvoLink 单张参考图不能超过 30 MB');
-        final form = FormData.fromMap({'file': MultipartFile.fromBytes(
-          asset.bytes, filename: 'reference.${extensionForMime(asset.mime)}', contentType: mediaTypeFor(asset.mime))});
-        final body = await _post(run, Uri.parse('https://files-api.evolink.ai/api/v1/files/upload/stream'), form, apiKey, json: false);
-        final uploaded = _decodeJsonObject(await _readText(run, body));
-        final url = uploaded['data'] is Map ? uploaded['data']['file_url'] : null;
-        if (uploaded['success'] != true || url is! String || !url.startsWith('https://')) {
-          throw const FormatException('EvoLink 参考图上传失败，未返回图片地址');
-        }
-        references.add(url);
-      }
+      rules.validateReference(asset.bytes.length, asset.mime);
     }
+    if (assets.mask case final mask?) {
+      if (mask.mime != 'image/png') throw const FormatException('蒙版必须为 PNG');
+    }
+    Future<String> upload(_AssetData asset) async {
+      final form = FormData.fromMap({'file': MultipartFile.fromBytes(
+        asset.bytes, filename: 'input.${extensionForMime(asset.mime)}', contentType: mediaTypeFor(asset.mime))});
+      final body = await _post(run, Uri.parse('https://files-api.evolink.ai/api/v1/files/upload/stream'), form, apiKey, json: false);
+      final uploaded = _decodeJsonObject(await _readText(run, body));
+      final url = uploaded['data'] is Map ? uploaded['data']['file_url'] : null;
+      if (uploaded['success'] != true || url is! String || !url.startsWith('https://')) {
+        throw const FormatException('EvoLink 图片上传失败，未返回图片地址');
+      }
+      return url;
+    }
+    final references = [
+      for (final asset in assets.references)
+        wave ? imageDataUrl(asset.bytes, asset.mime) : await upload(asset),
+    ];
+    final mask = assets.mask == null ? null : await upload(assets.mask!);
+    final payload = <String, dynamic>{
+      ...extra,
+      if (!wave) 'model': run.model,
+      if (rules.requiresPrompt || input.prompt.isNotEmpty) 'prompt': input.prompt,
+      if (references.isNotEmpty) rules.referenceField!: references,
+      if (mask != null) 'mask_url': mask,
+      if (rules.sizeField != null && params.size != 'auto') rules.sizeField!: params.size,
+      if (rules.qualityField != null && params.quality != 'auto')
+        rules.qualityField!: rules.lowercaseQuality ? params.quality.toLowerCase() : params.quality,
+      if (rules.formats.isNotEmpty) 'output_format': params.format,
+      if (rules.sendAutoBackground || params.background != 'auto') 'background': params.background,
+    };
     for (var i = 0; i < params.count; i++) {
       if (run.userCancelled) throw const _Canceled();
-      final payload = <String, dynamic>{
-        if (!wave) 'model': run.model,
-        'prompt': input.prompt,
-        if (references.isNotEmpty) (wave ? 'images' : 'image_urls'): references,
-        if (params.size != 'auto') (wave ? 'aspect_ratio' : 'size'): params.size,
-        (wave ? 'resolution' : 'quality'): wave ? params.quality.toLowerCase() : params.quality,
-        'output_format': params.format,
-        'background': params.background,
-      };
-      final body = await _post(run, uri(endpoint), payload, apiKey, json: true);
+      final body = await _post(run, _asyncUri(run, endpoint), payload, apiKey, json: true);
       var task = _decodeJsonObject(await _readText(run, body));
       if (wave) task = _asyncData(task);
       final id = task['id'];

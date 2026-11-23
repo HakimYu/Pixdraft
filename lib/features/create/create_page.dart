@@ -21,7 +21,7 @@ import '../editor/image_editor_page.dart';
 import 'prompt_library_page.dart';
 import 'size_selector.dart';
 import '../gallery/gallery_page.dart';
-import '../../api/params.dart';
+import '../../api/async_image_models.dart';
 import '../../plugins/plugin_contract.dart';
 import '../../plugins/plugin_registry.dart';
 import '../plugins/plugin_fields_form.dart';
@@ -58,6 +58,7 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
   final _prompt = TextEditingController();
   final _promptFocus = FocusNode();
   List<ProviderConfig> _providers = [];
+  Map<String, Map<String, dynamic>> _waveSchemas = {};
   List<ImageAsset> _references = [];
   ImageAsset? _mask, _markup;
   String? _providerId;
@@ -67,10 +68,62 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
     final preferred = response
         ? _responseModelOverride ?? provider.responseModel
         : _modelOverride ??
-              (_usesResponseModel ? provider.toolModel : provider.imageModel);
+              (!provider.protocol.isAsync && _usesResponseModel ? provider.toolModel : provider.imageModel);
     return provider.enabledModels.contains(preferred)
         ? preferred
         : provider.enabledModels.firstOrNull;
+  }
+
+  Object? _waveSchema(ProviderConfig provider, String model) =>
+      _waveSchemas[provider.id]?[model];
+
+  AsyncImageRules? get _asyncRules {
+    final provider = _provider;
+    if (provider == null || !provider.protocol.isAsync) return null;
+    final model = _selectedModel(provider);
+    if (model == null) return null;
+    return asyncImageRules(provider.protocol, model, waveSchema: _waveSchema(provider, model));
+  }
+
+  String? get _asyncInputWarning {
+    final rules = _asyncRules;
+    if (rules == null) return null;
+    if (rules.unsupported) return '当前接口需要专用输入，创建页暂不支持';
+    try {
+      rules.validateReferences(_references, _mask, _markup);
+    } on FormatException catch (error) {
+      return error.message;
+    }
+    return null;
+  }
+
+  Future<Map<String, Map<String, dynamic>>> _loadWaveSchemas(List<ProviderConfig> providers) async {
+    final entries = await Future.wait(providers.where((p) => p.protocol == ApiProtocol.wavespeed).map((p) async {
+      final value = await widget.store.setting(waveCatalogKey(p.id));
+      final models = value?['models'];
+      return MapEntry(p.id, value?['baseUrl'] == p.baseUrl && models is Map
+          ? Map<String, dynamic>.from(models) : <String, dynamic>{});
+    }));
+    return Map.fromEntries(entries);
+  }
+
+  void _adaptAsyncParams() {
+    final rules = _asyncRules;
+    if (rules == null) return;
+    var size = _params.size;
+    try {
+      rules.resolveSize(size);
+    } on FormatException {
+      size = 'auto';
+    }
+    _params = GenerationParams.fromJson({
+      ..._params.toJson(),
+      'size': size,
+      'quality': rules.qualities.contains(_params.quality) ? _params.quality : 'auto',
+      'format': rules.formats.contains(_params.format) ? _params.format : rules.formats.firstOrNull ?? 'png',
+      'background': rules.backgrounds.contains(_params.background) ? _params.background : 'auto',
+      'extra': <String, dynamic>{},
+    });
   }
 
   GenerationInput? _seed;
@@ -84,6 +137,7 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
   /// 未注入插件时返回 null，界面退回内置供应商的旧选项。
   GenerationCapabilities? get _capabilities {
     final provider = _provider;
+    if (provider?.protocol.isAsync == true) return _asyncRules?.capabilities;
     if (widget.plugins == null || provider == null) return null;
     try {
       return widget.plugins!.capabilities(
@@ -162,6 +216,7 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
       final (:draft, :revision) = await widget.store.readDraft();
       final selection = await widget.store.setting('selection');
       final providers = await widget.store.providers();
+      final waveSchemas = await _loadWaveSchemas(providers);
       if (!mounted) return;
       _update(() {
         _draftRevision = revision;
@@ -170,6 +225,7 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
         _markup = null;
         _params = const GenerationParams(inputFidelity: '');
         _providers = providers;
+        _waveSchemas = waveSchemas;
         _providerId =
             draft?['providerId'] as String? ??
             selection?['providerId'] as String?;
@@ -226,7 +282,11 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
         return;
       }
       final providers = await widget.store.providers();
-      _update(() => _providers = providers);
+      final waveSchemas = await _loadWaveSchemas(providers);
+      _update(() {
+        _providers = providers;
+        _waveSchemas = waveSchemas;
+      });
     } catch (_) {
       _update(() => _error = '无法读取供应商，请重试');
     }
@@ -317,6 +377,7 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
           source: _references.first,
           initialMask: _mask,
           initialMarkup: _markup,
+          maskOnly: _asyncRules?.mask == true,
         ),
       ),
     );
@@ -482,6 +543,9 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
       }
       await _save();
       final model = _selectedModel(provider);
+      final warning = _asyncInputWarning;
+      if (warning != null) throw FormatException(warning);
+      final schema = model == null ? null : _waveSchema(provider, model);
       final responseModel = _selectedModel(provider, response: true);
       if (model == null || (_usesResponseModel && responseModel == null))
         throw const FormatException('请先在供应商模型页启用模型');
@@ -489,6 +553,11 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
         ...provider.toJson(),
         (_usesResponseModel ? 'toolModel' : 'imageModel'): model,
         if (_usesResponseModel) 'responseModel': responseModel,
+        if (provider.protocol == ApiProtocol.wavespeed)
+          'pluginConfig': {
+            ...provider.pluginConfig,
+            waveImageSchemaKey: schema,
+          },
       });
       final id = newId();
       if (!mounted) return;
@@ -890,7 +959,7 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
         ),
       FilledButton.icon(
         key: const ValueKey('submit-generation'),
-        onPressed: _submitting ? null : _generate,
+        onPressed: _submitting || _asyncInputWarning != null ? null : _generate,
         icon: _submitting
             ? const SizedBox.square(
                 dimension: 18,
@@ -936,17 +1005,18 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
   Widget _composerContent() {
     final provider = _provider;
     final model = provider == null ? '' : _selectedModel(provider) ?? '';
+    final rules = _asyncRules;
+    final warning = _asyncInputWarning;
     final capabilities = _capabilities;
+    final canEdit = capabilities == null
+        ? provider?.protocol.isAsync != true
+        : capabilities.supportsMask || capabilities.supportsMarkup;
+    final backgrounds = rules == null ? const ['auto', 'opaque', 'transparent'] : rules.backgrounds.isEmpty ? const <String>[] : ['auto', ...rules.backgrounds];
     final asyncProtocol = provider?.protocol.isAsync == true;
-    final qualityOptions = qualityOptionsFor(
-      capabilities,
-      asyncProtocol: asyncProtocol,
-      model: model,
-    );
-    final formatOptions = formatOptionsFor(
-      capabilities,
-      asyncProtocol: asyncProtocol,
-    );
+    final qualityOptions = rules == null
+        ? qualityOptionsFor(capabilities, asyncProtocol: asyncProtocol, model: model)
+        : rules.capabilities.qualities;
+    final formatOptions = rules?.formats ?? formatOptionsFor(capabilities, asyncProtocol: asyncProtocol);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -980,7 +1050,8 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
           children: [
             Text('参考图', style: Theme.of(context).textTheme.titleSmall),
             const Spacer(),
-            Text('${_references.length}/$_referenceLimit'),
+            Text(rules?.referenceField != null && rules?.maxReferences == null
+                ? '${_references.length}' : '${_references.length}/$_referenceLimit'),
             IconButton(
               tooltip: '添加参考图片',
               onPressed: _picking || _references.length >= _referenceLimit
@@ -1102,12 +1173,10 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
               ),
             ),
           ),
-        if (_references.isNotEmpty &&
-            (capabilities != null
-                ? capabilities.supportsMask || capabilities.supportsMarkup
-                : provider?.protocol.isAsync != true))
+        if (_references.isNotEmpty && (canEdit || _mask != null || _markup != null))
           Wrap(
             children: [
+              if (canEdit)
               TextButton.icon(
                 onPressed: _editReference,
                 icon: const Icon(Icons.draw_outlined),
@@ -1132,6 +1201,8 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
                 ),
             ],
           ),
+        if (warning != null)
+          Text(warning, style: TextStyle(color: Theme.of(context).colorScheme.error)),
         const SizedBox(height: 16),
         Text('生成参数', style: Theme.of(context).textTheme.titleSmall),
         const SizedBox(height: 8),
@@ -1144,6 +1215,7 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
               label: Text(provider?.name ?? '配置第一个供应商'),
               onPressed: _selectProvider,
             ),
+            if (rules == null || rules.sizeField != null)
             ActionChip(
               avatar: const Icon(Icons.aspect_ratio, size: 18),
               label: Text('尺寸 ${_params.size == 'auto' ? '自动' : _params.size}'),
@@ -1159,6 +1231,8 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
             trailing: const Icon(Icons.expand_more),
             onTap: () => _selectModel(),
           ),
+        if (rules?.confirmed == false)
+          const Text('当前模型的参数规则尚未完整确认'),
         if (provider != null && _usesResponseModel)
           ListTile(
             contentPadding: EdgeInsets.zero,
@@ -1171,9 +1245,10 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
           ),
         Row(
           children: [
+            if (qualityOptions.isNotEmpty)
             Expanded(
               child: _choice(
-                '质量',
+                rules == null ? '质量' : rules.mask ? '画质' : '分辨率',
                 qualityOptions.contains(_params.quality)
                     ? _params.quality
                     : 'auto',
@@ -1181,7 +1256,7 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
                 (v) => _change('quality', v),
               ),
             ),
-            const SizedBox(width: 12),
+            if (qualityOptions.isNotEmpty) const SizedBox(width: 12),
             Expanded(
               child: _choice(
                 '数量',
@@ -1192,12 +1267,13 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
             ),
           ],
         ),
+        if (!asyncProtocol || formatOptions.isNotEmpty || backgrounds.isNotEmpty || (capabilities?.extraFields.isNotEmpty ?? false))
         ExpansionTile(
           tilePadding: EdgeInsets.zero,
           title: const Text('更多参数'),
-          subtitle: Text(_params.format.toUpperCase()),
+          subtitle: formatOptions.isEmpty ? null : Text(_params.format.toUpperCase()),
           children: [
-            _choice(
+            if (formatOptions.isNotEmpty) _choice(
               '输出格式',
               formatOptions.contains(_params.format)
                   ? _params.format
@@ -1221,11 +1297,8 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
                   ),
                 ],
               ),
-            _choice('背景', _params.background, [
-              'auto',
-              'opaque',
-              'transparent',
-            ], (v) => _change('background', v)),
+            if (backgrounds.isNotEmpty)
+              _choice('背景', backgrounds.contains(_params.background) ? _params.background : backgrounds.first, backgrounds, (v) => _change('background', v)),
             if (provider?.protocol.isAsync != true)
               _choice('审核', _params.moderation, [
                 'auto',
@@ -1244,7 +1317,7 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
                 'medium',
                 'high',
               ], (v) => _change('complexity', v)),
-            if (_params.format == 'gif') ...[
+            if (!asyncProtocol && _params.format == 'gif') ...[
               _choice(
                 '动画帧数',
                 '${_params.gifFrames}',
@@ -1263,6 +1336,7 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
             ],
             if ((capabilities?.extraFields ?? const []).isNotEmpty)
               PluginFieldsForm(
+                key: ValueKey((provider?.id, model, provider == null ? null : _waveSchema(provider, model))),
                 fields: capabilities!.extraFields,
                 initial: _params.extra,
                 onChanged: _setExtra,
@@ -1293,8 +1367,9 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
 
   Future<void> _selectSize() async {
     final protocol = _provider?.protocol;
+    final rules = _asyncRules;
     final supportedRatios = protocol != null && protocol.isAsync
-        ? aspectRatiosFor(protocol)
+        ? rules?.ratios ?? const <String>[]
         : null;
     await showModalBottomSheet<void>(
       context: context,
@@ -1321,6 +1396,8 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
                   SizeSelector(
                     size: _params.size,
                     supportedRatios: supportedRatios,
+                    allowCustomPixels: rules?.pixelSize != null,
+                    presetSizes: rules?.sizeValues ?? const [],
                     onChanged: (value) {
                       _change('size', value);
                       update(() {});
@@ -1404,11 +1481,13 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
       ),
     );
     if (model != null && mounted) {
+      final previousModel = _selectedModel(provider, response: response);
       _update(() {
         if (response) {
           _responseModelOverride = model;
         } else {
           _modelOverride = model;
+          if (model != previousModel) _adaptAsyncParams();
         }
       });
       _scheduleSave();
@@ -1444,18 +1523,9 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
                   onTap: () {
                     _update(() {
                       _providerId = p.id;
-                      if (p.protocol.isAsync) {
-                        _params = GenerationParams.fromJson({
-                          ..._params.toJson(),
-                          'size': 'auto',
-                          'quality': 'auto',
-                          'format': 'png',
-                        });
-                        _mask = null;
-                        _markup = null;
-                      }
                       _modelOverride = null;
                       _responseModelOverride = null;
+                      _adaptAsyncParams();
                     });
                     _scheduleSave();
                     Navigator.pop(context);

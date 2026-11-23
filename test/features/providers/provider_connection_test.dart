@@ -79,6 +79,30 @@ void main() {
     expect(adapter.lastRequest!.followRedirects, isFalse);
   });
 
+  test('WaveSpeed 目录提取图片端点规则，排除视频与其他端点', () async {
+    const model = 'example/image-edit';
+    const schema = {
+      'properties': {
+        'prompt': {'type': 'string'},
+        'images': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 3},
+      },
+      'required': ['prompt', 'images'],
+    };
+    final adapter = _RecordingAdapter(200, jsonEncode({'data': [
+      {'model_id': 'example/video', 'type': 'image-to-video'},
+      {'model_id': model, 'type': 'image-to-image', 'api_schema': {'api_schemas': [
+        {'type': 'model_run', 'method': 'POST', 'api_path': '/api/v3/other/model', 'request_schema': {}},
+        {'type': 'model_run', 'method': 'POST', 'api_path': '/api/v3/$model', 'request_schema': schema},
+      ]}},
+    ]}));
+    final dio = Dio()..httpClientAdapter = adapter;
+    final result = await ProviderModelChecker(dio: dio).check(const ProviderConfig(
+      id: 'wave', name: 'WaveSpeed', baseUrl: 'https://api.wavespeed.ai', protocol: ApiProtocol.wavespeed,
+    ), 'test');
+    expect(result.models, [model]);
+    expect(result.imageSchemas, {model: schema});
+    expect(adapter.lastRequest!.uri.path, '/api/v3/models');
+  });
   test('无密钥时不发送 Authorization', () async {
     final adapter = _RecordingAdapter(200, jsonEncode({'data': []}));
     final dio = Dio()..httpClientAdapter = adapter;

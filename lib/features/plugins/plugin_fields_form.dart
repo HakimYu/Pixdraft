@@ -89,7 +89,7 @@ class _PluginFieldsFormState extends State<PluginFieldsForm> {
         switch (field.type) {
           'bool' => SwitchListTile(contentPadding: EdgeInsets.zero, title: Text(field.label), value: _values[field.key] == true, onChanged: widget.enabled ? (value) => _update(field.key, value) : null),
           'select' => DropdownButtonFormField<String>(
-            initialValue: _values[field.key] as String?,
+            initialValue: field.options.contains(_values[field.key]) ? _values[field.key] as String : null,
             decoration: InputDecoration(labelText: field.label, border: const OutlineInputBorder()),
             items: [for (final option in field.options) DropdownMenuItem(value: option, child: Text(option))],
             onChanged: widget.enabled ? (value) => _update(field.key, value) : null,

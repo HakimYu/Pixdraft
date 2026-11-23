@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import '../models/models.dart';
+import 'async_image_models.dart';
 const asyncAspectRatios = ['1:1', '1:2', '2:1', '1:3', '3:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '9:21', '21:9'];
 
 List<String> aspectRatiosFor(ApiProtocol protocol) => protocol == ApiProtocol.evolink ? asyncAspectRatios.where((s) => !['1:2', '2:1', '1:3', '3:1'].contains(s)).toList() : asyncAspectRatios;
@@ -119,6 +120,8 @@ ResolvedParams resolveParams(
   required ApiProtocol protocol,
   required String imageModel,
   required bool hasInputImages,
+  AsyncImageRules? asyncRules,
+  bool recovering = false,
 }) {
   if (imageModel.trim().isEmpty) throw const FormatException('模型 ID 不能为空');
 
@@ -130,25 +133,17 @@ ResolvedParams resolveParams(
   if (!_backgrounds.contains(background)) background = 'auto';
 
   if (protocol.isAsync) {
-    if (!{'png', 'jpeg'}.contains(format)) throw const FormatException('当前协议仅支持 PNG / JPEG');
-    final quality = params.quality.toUpperCase();
-    if (!{'AUTO', '1K', '1.5K', '2K'}.contains(quality)) {
-      throw const FormatException('当前协议的分辨率请选择 1K、1.5K 或 2K');
-    }
-    final size = params.size.trim();
-    if (size != 'auto' && !aspectRatiosFor(protocol).contains(size)) {
-      if (protocol == ApiProtocol.wavespeed) throw const FormatException('WaveSpeed 请选择宽高比或自动尺寸');
-      final match = RegExp(r'^(\d+)[xX×](\d+)$').firstMatch(size);
-      final w = match == null ? 0 : int.parse(match.group(1)!);
-      final h = match == null ? 0 : int.parse(match.group(2)!);
-      if (w * h < 921600 || w * h > 4624220 || w / h < 1 / 16 || w / h > 16) {
-        throw const FormatException('EvoLink 尺寸需为宽高比或 921600–4624220 像素、比例 1:16–16:1 的尺寸');
-      }
-    }
-    return ResolvedParams(size: size, quality: quality == 'AUTO' ? '1K' : quality,
-      format: background == 'transparent' ? 'png' : format, background: background,
-      moderation: 'auto', count: params.count.clamp(1, 10), compression: 100,
-      gifFrames: 9, gifDuration: 200, inputFidelity: null, complexity: null);
+    final rules = asyncRules ?? asyncImageRules(protocol, imageModel);
+    background = rules.backgrounds.contains(background) ? background : 'auto';
+    final size = recovering ? params.size : rules.resolveSize(params.size);
+    final quality = recovering ? params.quality : rules.resolveQuality(params.quality);
+    return ResolvedParams(
+      size: size, quality: quality,
+      format: recovering ? format : rules.resolveFormat(format, background),
+      background: background, moderation: 'auto', count: params.count.clamp(1, 10),
+      compression: 100, gifFrames: 9, gifDuration: 200,
+      inputFidelity: null, complexity: null,
+    );
   }
   final rawQuality = params.quality.trim().toLowerCase();
   var quality =

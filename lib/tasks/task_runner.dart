@@ -158,7 +158,10 @@ class TaskRunner extends ChangeNotifier {
         if (currentProvider == null) throw StateError('供应商已删除或停用，请重新选择');
         if (currentProvider.baseUrl != input.provider.baseUrl)
           throw StateError('供应商地址已变更，请复用参数重新提交，避免将当前密钥发送到旧地址');
-        final expectedCount = plugins != null
+        final recovering = checkpoints.isNotEmpty;
+        final expectedCount = recovering && input.provider.protocol.isAsync
+            ? input.params.count.clamp(1, 10)
+            : plugins != null
             ? (await plugins!.plan(input)).expectedCount
             : resolveParams(
                 input.params,
@@ -172,7 +175,6 @@ class TaskRunner extends ChangeNotifier {
         apiKey = key;
         if (key == null || key.isEmpty) throw StateError('供应商密钥缺失');
         if (_cancelled.contains(id)) return;
-        final recovering = checkpoints.isNotEmpty;
         final effective = recovering ? input : await _preprocess(
           task: task,
           input: input,

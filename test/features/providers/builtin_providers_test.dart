@@ -106,6 +106,7 @@ void main() {
             protocol: item.descriptor.id == 'wavespeed'
                 ? ApiProtocol.wavespeed
                 : ApiProtocol.evolink,
+            imageModel: item.descriptor.defaultModel,
           ),
         );
         if (!async) continue;
@@ -113,7 +114,7 @@ void main() {
         expect(caps.supportsMask, isFalse);
         expect(caps.supportsMarkup, isFalse);
         expect(caps.supportsPreview, isFalse);
-        expect(caps.supportsCustomSize, isFalse);
+        expect(caps.supportsCustomSize, item.descriptor.id == 'evolink');
         expect(caps.formats, ['png', 'jpeg']);
         expect(caps.qualities, ['auto', '1K', '1.5K', '2K']);
         expect(caps.sizes, isNotEmpty);
@@ -158,7 +159,7 @@ void main() {
     test('异步协议保留宽高比，并把真实数量交给 runner', () async {
       final plan = await extensionOf('wavespeed').plan(
         testInput(
-          provider: testProvider(protocol: ApiProtocol.wavespeed),
+          provider: testProvider(protocol: ApiProtocol.wavespeed, imageModel: 'bytedance/seedream-v5.5'),
           prompt: '一只猫',
           params: const GenerationParams(
             size: '16:9',
@@ -213,21 +214,21 @@ void main() {
       await expectPlanError(
         wavespeed,
         testInput(
-          provider: testProvider(protocol: ApiProtocol.wavespeed),
+          provider: testProvider(protocol: ApiProtocol.wavespeed, imageModel: 'bytedance/seedream-v5.5/edit'),
           prompt: 'x',
           references: List.filled(11, referenceAsset()),
         ),
-        '参考图最多 10 张',
+        '当前模型最多支持 10 张参考图',
       );
       await expectPlanError(
         wavespeed,
         testInput(
-          provider: testProvider(protocol: ApiProtocol.wavespeed),
+          provider: testProvider(protocol: ApiProtocol.wavespeed, imageModel: 'bytedance/seedream-v5.5/edit'),
           prompt: 'x',
           references: [referenceAsset()],
           mask: maskAsset(),
         ),
-        '当前协议不支持蒙版或标注，请清除编辑图层',
+        '当前模型的蒙版需要受支持的参考图编辑模式',
       );
     });
   });
