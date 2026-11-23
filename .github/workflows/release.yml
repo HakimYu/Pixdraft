@@ -108,7 +108,7 @@ jobs:
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > ../pixdraft-signing/android-release.p12
           printf '%s\n' "$ANDROID_KEYSTORE_PASSWORD" > ../pixdraft-signing/android-release.pass
           unset ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD
-          sdkmanager 'platforms;android-37.0' 'build-tools;36.1.0' 'ndk;28.2.13676358'
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-37.0' 'build-tools;36.1.0' 'ndk;28.2.13676358'
           flutter build apk --release --build-name "$VERSION"
           mv build/app/outputs/flutter-apk/app-release.apk dist/Pixdraft-android-universal.apk
           flutter build apk --release --build-name "$VERSION" --split-per-abi
