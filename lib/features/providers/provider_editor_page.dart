@@ -200,6 +200,30 @@ class _ProviderEditorPageState extends State<ProviderEditorPage> {
     });
   }
 
+  Future<void> _copyApiKey(ProviderConfig provider) async {
+    String message;
+    try {
+      final key = await widget.store.apiKey(
+        provider.id,
+        baseUrl: provider.baseUrl,
+      );
+      if (!mounted) return;
+      if (key == null || key.isEmpty) {
+        message = '此供应商尚未保存 API 密钥';
+      } else {
+        await Clipboard.setData(ClipboardData(text: key));
+        message = 'API 密钥已复制';
+      }
+    } catch (_) {
+      message = '复制 API 密钥失败';
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    }
+  }
+
   Future<void> _save() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
     final config = ProviderConfig(
@@ -331,6 +355,15 @@ class _ProviderEditorPageState extends State<ProviderEditorPage> {
                 enableSuggestions: false,
                 autocorrect: false,
                 textInputAction: TextInputAction.next,
+                suffixIcon: _isNew
+                    ? null
+                    : IconButton(
+                        tooltip: '复制已保存的密钥',
+                        onPressed: _saving
+                            ? null
+                            : () => _copyApiKey(widget.provider!),
+                        icon: const Icon(Icons.copy_outlined),
+                      ),
               ),
               if (_showAdapterPicker) ...[
                 KeyedSubtree(
@@ -623,6 +656,7 @@ class _ProviderEditorPageState extends State<ProviderEditorPage> {
     required TextEditingController controller,
     required String label,
     String? helper,
+    Widget? suffixIcon,
     TextInputType? keyboardType,
     List<TextInputFormatter>? inputFormatters,
     String? Function(String?)? validator,
@@ -644,6 +678,7 @@ class _ProviderEditorPageState extends State<ProviderEditorPage> {
       decoration: InputDecoration(
         labelText: label,
         helperText: helper,
+        suffixIcon: suffixIcon,
         helperMaxLines: 2,
       ),
     );

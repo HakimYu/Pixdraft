@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_gen/data/studio_store.dart';
 import 'package:image_gen/features/providers/providers_page.dart';
@@ -236,6 +237,16 @@ void main() {
   });
 
   testWidgets('编辑时不回填密钥，留空保存不覆盖原密钥', (tester) async {
+    String? copied;
+    final messenger = tester.binding.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') {
+        copied = (call.arguments as Map)['text'] as String;
+      }
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(SystemChannels.platform, null));
+
     final store = _FakeStore(database, [_provider(name: '旧名字')]);
     store._keys['p1'] = 'sk-existing';
     await _pumpPage(tester, store);
@@ -262,6 +273,12 @@ void main() {
     expect(keyField.controller?.text, isEmpty);
     expect(find.text('sk-existing'), findsNothing);
     expect(find.text('已保存的密钥不会显示；留空保持不变'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('复制已保存的密钥'));
+    await tester.pumpAndSettle();
+    expect(copied, 'sk-existing');
+    expect(find.text('API 密钥已复制'), findsOneWidget);
+    expect(keyField.controller?.text, isEmpty);
 
     await _enter(tester, 'providerName', '新名字');
     await tester.tap(find.byKey(const ValueKey('providerSaveButton')));
