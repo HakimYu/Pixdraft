@@ -17,7 +17,10 @@ class StudioStore extends ChangeNotifier {
   StudioStore(Database db, Directory root, {FlutterSecureStorage? credentials})
     : this._(db, root, credentials: credentials);
   StudioStore._(this.db, this._root, {FlutterSecureStorage? credentials})
-    : credentials = credentials ?? const FlutterSecureStorage();
+    : credentials = credentials ?? const FlutterSecureStorage(
+        // ad hoc 签名的 macOS release 仍使用钥匙串保存凭据。
+        mOptions: MacOsOptions(usesDataProtectionKeychain: !kReleaseMode),
+      );
   final Database db;
   final Directory? _root;
   Directory get root => _root ?? (throw UnsupportedError('Web 没有本地存储目录'));
