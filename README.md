@@ -70,3 +70,7 @@ Pixdraft 自有部分采用 [PolyForm Noncommercial 1.0.0](LICENSE)，可按许�
 ## 第三方来源与许可
 
 本应用的创作和图库流程参考 [GPT Image Playground](https://github.com/insistanan/GPT_Image_Playground)，并兼容导入其 v6–v9 ZIP 备份。
+
+## 🎉 致谢
+
+本项目在 [LINUX DO](https://linux.do/) 社区推广，感谢 LINUX DO 社区对开源项目的支持与认可。
