@@ -30,7 +30,13 @@ String sizeForRatio(String ratio, int k) {
 }
 
 class SizeSelector extends StatefulWidget {
-  const SizeSelector({super.key, required this.size, required this.onChanged});
+  const SizeSelector({
+    super.key,
+    required this.size,
+    required this.onChanged,
+    this.supportedRatios,
+  });
+  final List<String>? supportedRatios;
   final String size;
   final ValueChanged<String> onChanged;
   @override
@@ -59,12 +65,16 @@ class _SizeSelectorState extends State<SizeSelector> {
       _restore();
   }
 
-  String get _selectedSize => _ratio == 'auto'
+  String get _selectedSize => widget.supportedRatios != null || _ratio == 'auto'
       ? 'auto'
       : _ratio == 'custom'
       ? '${_width.text}x${_height.text}'
       : sizeForRatio(_ratio, _k);
   void _restore() {
+    if (widget.supportedRatios != null) {
+      _ratio = widget.size;
+      return;
+    }
     _ratio = widget.size == 'auto' ? 'auto' : 'custom';
     for (final ratio in [...commonRatios, ...extraRatios]) {
       for (final k in [1, 2, 4]) {
@@ -157,71 +167,84 @@ class _SizeSelectorState extends State<SizeSelector> {
     ],
   );
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      Text('画面比例', style: Theme.of(context).textTheme.titleMedium),
-      const SizedBox(height: 12),
-      _ratios(['auto', ...commonRatios, 'custom']),
-      ExpansionTile(
-        tilePadding: EdgeInsets.zero,
-        title: const Text('更多比例'),
-        initiallyExpanded: extraRatios.contains(_ratio),
-        children: [_ratios(extraRatios), const SizedBox(height: 12)],
-      ),
-      if (_ratio == 'custom') ...[
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _width,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: '宽（像素）'),
-                onChanged: (_) => _custom(),
-              ),
-            ),
-            const Padding(padding: EdgeInsets.all(12), child: Text('×')),
-            Expanded(
-              child: TextField(
-                controller: _height,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: '高（像素）'),
-                onChanged: (_) => _custom(),
-              ),
-            ),
-          ],
-        ),
-        if (_error != null)
-          Text(
-            _error!,
-            style: TextStyle(color: Theme.of(context).colorScheme.error),
+  Widget build(BuildContext context) {
+    final supported = widget.supportedRatios;
+    final additional = supported == null
+        ? extraRatios
+        : extraRatios.where(supported.contains).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text('画面比例', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 12),
+        _ratios([
+          'auto',
+          ...commonRatios.where((ratio) => supported?.contains(ratio) ?? true),
+          if (supported == null) 'custom',
+        ]),
+        if (additional.isNotEmpty)
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            title: const Text('更多比例'),
+            initiallyExpanded: additional.contains(_ratio),
+            children: [_ratios(additional), const SizedBox(height: 12)],
           ),
-      ] else ...[
-        const Text('分辨率档位'),
-        Wrap(
-          spacing: 8,
-          children: [
-            for (final k in [1, 2, 4])
-              ChoiceChip(
-                label: Text('${k}K'),
-                selected: _ratio != 'auto' && _k == k,
-                onSelected: _ratio == 'auto'
-                    ? null
-                    : (_) {
-                        setState(() => _k = k);
-                        widget.onChanged(_selectedSize);
-                      },
+        if (supported == null) ...[
+          if (_ratio == 'custom') ...[
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _width,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: '宽（像素）'),
+                    onChanged: (_) => _custom(),
+                  ),
+                ),
+                const Padding(padding: EdgeInsets.all(12), child: Text('×')),
+                Expanded(
+                  child: TextField(
+                    controller: _height,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: '高（像素）'),
+                    onChanged: (_) => _custom(),
+                  ),
+                ),
+              ],
+            ),
+            if (_error != null)
+              Text(
+                _error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
               ),
+          ] else ...[
+            const Text('分辨率档位'),
+            Wrap(
+              spacing: 8,
+              children: [
+                for (final k in [1, 2, 4])
+                  ChoiceChip(
+                    label: Text('${k}K'),
+                    selected: _ratio != 'auto' && _k == k,
+                    onSelected: _ratio == 'auto'
+                        ? null
+                        : (_) {
+                            setState(() => _k = k);
+                            widget.onChanged(_selectedSize);
+                          },
+                  ),
+              ],
+            ),
           ],
-        ),
+          const SizedBox(height: 8),
+          Text(
+            _ratio == 'auto'
+                ? '自动比例和分辨率由模型决定；指定 K 数请先选择比例。'
+                : '实际请求：${normalizeSize(widget.size)} 像素（按接口尺寸限制调整）',
+          ),
+        ],
+        const SizedBox(height: 12),
       ],
-      const SizedBox(height: 8),
-      Text(
-        _ratio == 'auto'
-            ? '自动比例和分辨率由模型决定；指定 K 数请先选择比例。'
-            : '实际请求：${normalizeSize(widget.size)} 像素（按接口尺寸限制调整）',
-      ),
-      const SizedBox(height: 12),
-    ],
-  );
+    );
+  }
 }

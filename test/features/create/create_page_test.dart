@@ -565,6 +565,55 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  for (final protocol in [ApiProtocol.evolink, ApiProtocol.wavespeed]) {
+    testWidgets('${protocol.name} 比例按钮显示预览并保留所选比例', (tester) async {
+      final store = _FakeStore(
+        providers: [
+          ProviderConfig(
+            id: 'p1',
+            name: protocol.label,
+            baseUrl: 'https://api.example.com/v1',
+            protocol: protocol,
+          ),
+        ],
+        keys: {'p1': 'test'},
+      );
+      await _pump(tester, store: store, submit: (_) async {});
+
+      Future<void> openSizes(String size) async {
+        final button = find.text('尺寸 $size');
+        await tester.ensureVisible(button);
+        await tester.tap(button);
+        await tester.pumpAndSettle();
+      }
+
+      await openSizes('自动');
+      final wide = find.widgetWithText(ChoiceChip, '16:9');
+      expect(tester.widget<ChoiceChip>(wide).avatar, isA<SizedBox>());
+      expect(find.text('自定义'), findsNothing);
+      expect(find.text('分辨率档位'), findsNothing);
+      await tester.tap(find.text('更多比例'));
+      await tester.pumpAndSettle();
+      expect(
+        find.widgetWithText(ChoiceChip, '1:3'),
+        protocol == ApiProtocol.wavespeed ? findsOneWidget : findsNothing,
+      );
+      final ratio = find.widgetWithText(ChoiceChip, '21:9');
+      await tester.ensureVisible(ratio);
+      await tester.tap(ratio);
+      await tester.pumpAndSettle();
+      expect(tester.widget<ChoiceChip>(ratio).selected, isTrue);
+      final done = find.text('完成');
+      await tester.ensureVisible(done);
+      await tester.tap(done);
+      await tester.pumpAndSettle();
+      expect(store.settings['draft']!['params']['size'], '21:9');
+
+      await openSizes('21:9');
+      expect(tester.widget<ChoiceChip>(ratio).selected, isTrue);
+    });
+  }
+
   testWidgets('键盘展开时抽屉仍能提交，失败保留输入', (tester) async {
     tester.view.physicalSize = const Size(320, 568);
     tester.view.devicePixelRatio = 1;

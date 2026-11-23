@@ -1292,29 +1292,10 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
   }
 
   Future<void> _selectSize() async {
-    if (_provider?.protocol.isAsync == true) {
-      final size = await showModalBottomSheet<String>(
-        context: context,
-        showDragHandle: true,
-        builder: (context) => SafeArea(
-          child: ListView(
-            shrinkWrap: true,
-            children: [
-              for (final size in [
-                'auto',
-                ...aspectRatiosFor(_provider!.protocol),
-              ])
-                ListTile(
-                  title: Text(size == 'auto' ? '自动' : size),
-                  onTap: () => Navigator.pop(context, size),
-                ),
-            ],
-          ),
-        ),
-      );
-      if (size != null && mounted) _change('size', size);
-      return;
-    }
+    final protocol = _provider?.protocol;
+    final supportedRatios = protocol != null && protocol.isAsync
+        ? aspectRatiosFor(protocol)
+        : null;
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -1339,6 +1320,7 @@ class _CreatePageState extends State<CreatePage> with WidgetsBindingObserver {
                 children: [
                   SizeSelector(
                     size: _params.size,
+                    supportedRatios: supportedRatios,
                     onChanged: (value) {
                       _change('size', value);
                       update(() {});
