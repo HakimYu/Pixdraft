@@ -34,12 +34,18 @@ flutter test
 
 | 目标 | 构建命令 | 注意事项 |
 | --- | --- | --- |
-| Android | `flutter build apk --release --split-per-abi` | APK 输出到 `build/app/outputs/flutter-apk/`。当前 release 使用调试签名，正式发行前须配置发布签名。 |
+| Android | `flutter build apk --release --split-per-abi` | APK 输出到 `build/app/outputs/flutter-apk/`。正式发布需配置 `../pixdraft-signing/` 中的 Android 发布签名。 |
 | iOS / iPadOS | `flutter build ios --release --no-codesign` | 真机安装另需签名。 |
 | macOS | `flutter build macos --release` | 发布需配置签名。 |
 | Windows | `flutter build windows --release` | 需要 Visual Studio C++ 桌面工具链。 |
 | Linux | `flutter build linux --release` | 需要 GTK 和 libsecret 开发包；运行时需要可用的 Secret Service。 |
 | Web | `flutter build web --release --no-wasm-dry-run` | 部署整个 `build/web/`，详见 [Web 部署与存储](web/SQLITE.md)。 |
+
+## 应用更新
+
+在原生应用中打开「设置 → 应用更新」可手动检查 GitHub Releases、关闭自动检查或指定镜像。自动模式优先使用 GitHub 与内置镜像，内置候选均不可用时才读取 Akams 节点名单。安装包通过发布签名清单校验后可交给系统打开。
+
+签名清单和安装包的发布步骤见 [发布 Pixdraft 更新](tool/UPDATE.md)。
 
 ## 许可证
 
