@@ -1,8 +1,24 @@
 # Pixdraft
 
+![Pixdraft 海报，展示创作面板和作品图库](docs/screenshots/poster.png)
+
 接入自己的生图服务，用提示词或参考图生成图片。
 
 Flutter 构建，作品保存在本机或当前浏览器。
+
+## 下载
+
+[GitHub Releases](https://github.com/HakimYu/Pixdraft/releases/latest) 提供 Android APK、macOS 通用 DMG 和 Ubuntu 24.04 x86_64 DEB。
+
+## 界面演示
+
+| 创作面板 | 作品图库 |
+| --- | --- |
+| ![填写提示词、添加参考图并选择生成参数](docs/screenshots/create.png) | ![用纯图模式浏览作品并按分类筛选](docs/screenshots/gallery.png) |
+| **局部编辑** | **模型管理** |
+| ![在图片上绘制矩形蒙版，指定重绘区域](docs/screenshots/editor.png) | ![管理供应商的已启用模型和默认模型](docs/screenshots/models.png) |
+
+截图中的风景照片用于演示，来自 [Unsplash](https://unsplash.com/license)。
 
 ## 开始创作
 
