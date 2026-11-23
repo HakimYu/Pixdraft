@@ -1,0 +1,321 @@
+name: Release Pixdraft
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 已存在的正式版本标签，例如 v1.0.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pixdraft-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  FLUTTER_VERSION: '3.47.5'
+
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      commit: ${{ steps.resolve.outputs.commit }}
+    steps:
+      - id: resolve
+        name: Resolve release tag
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          number='(0|[1-9][0-9]{0,8})'
+          if [[ ! "$TAG" =~ ^v$number\.$number\.$number$ ]]; then
+            echo 'Use a stable release tag such as v1.0.0.' >&2
+            exit 1
+          fi
+          ref="refs/tags/$TAG"
+          refs=$(git ls-remote --exit-code "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$ref" "$ref^{}")
+          commit=$(awk -v ref="$ref" '$2==ref {tag=$1} $2==ref"^{}" {commit=$1} END {print commit ? commit : tag}' <<< "$refs")
+          [[ "$commit" =~ ^[a-f0-9]{40}$ ]]
+          printf 'tag=%s\nversion=%s\ncommit=%s\n' "$TAG" "${TAG#v}" "$commit" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: source
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: android
+            runner: ubuntu-24.04
+          - platform: ios
+            runner: macos-26
+          - platform: macos
+            runner: macos-26
+          - platform: windows
+            runner: windows-2022
+          - platform: linux
+            runner: ubuntu-24.04
+          - platform: web
+            runner: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.source.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.commit }}
+          persist-credentials: false
+      # Use the current installer script when rebuilding older tags.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: matrix.platform == 'windows'
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-config
+          sparse-checkout: windows/installer
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        if: matrix.platform == 'android'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Android APKs
+        if: matrix.platform == 'android'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          : "${ANDROID_KEYSTORE_BASE64:?Set ANDROID_KEYSTORE_BASE64}"
+          : "${ANDROID_KEYSTORE_PASSWORD:?Set ANDROID_KEYSTORE_PASSWORD}"
+          umask 077
+          mkdir -p ../pixdraft-signing dist
+          trap 'rm -f ../pixdraft-signing/android-release.p12 ../pixdraft-signing/android-release.pass' EXIT
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > ../pixdraft-signing/android-release.p12
+          printf '%s\n' "$ANDROID_KEYSTORE_PASSWORD" > ../pixdraft-signing/android-release.pass
+          unset ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD
+          sdkmanager 'platforms;android-37.0' 'build-tools;36.1.0' 'ndk;28.2.13676358'
+          flutter build apk --release --build-name "$VERSION"
+          mv build/app/outputs/flutter-apk/app-release.apk dist/Pixdraft-android-universal.apk
+          flutter build apk --release --build-name "$VERSION" --split-per-abi
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            mv "build/app/outputs/flutter-apk/app-$abi-release.apk" "dist/Pixdraft-android-$abi.apk"
+          done
+
+          apksigner="$ANDROID_HOME/build-tools/36.1.0/apksigner"
+          certificate='ff6593369eb3c55785318e7750ce9601e50d6c1948342cf3fc711bc17cc88fae'
+          for apk in dist/*.apk; do
+            if ! "$apksigner" verify --print-certs "$apk" | grep -Fx "Signer #1 certificate SHA-256 digest: $certificate"; then
+              echo "APK signing certificate does not match the published Pixdraft APK: $apk" >&2
+              exit 1
+            fi
+          done
+
+      - name: iOS and iPadOS unsigned IPA
+        if: matrix.platform == 'ios'
+        run: |
+          flutter build ios --release --no-codesign --build-name "$VERSION"
+          mkdir -p dist "$RUNNER_TEMP/ios/Payload"
+          test -d build/ios/iphoneos/Runner.app
+          ditto build/ios/iphoneos/Runner.app "$RUNNER_TEMP/ios/Payload/Runner.app"
+          ditto -c -k --keepParent "$RUNNER_TEMP/ios/Payload" dist/Pixdraft-ios-unsigned.ipa
+
+      - name: macOS universal DMG
+        if: matrix.platform == 'macos'
+        run: |
+          flutter build macos --release --build-name "$VERSION"
+          app=build/macos/Build/Products/Release/Pixdraft.app
+          architectures=$(lipo -archs "$app/Contents/MacOS/Pixdraft")
+          [[ " $architectures " == *' arm64 '* && " $architectures " == *' x86_64 '* ]]
+          codesign --verify --deep --strict "$app"
+          mkdir -p dist "$RUNNER_TEMP/dmg"
+          ditto "$app" "$RUNNER_TEMP/dmg/Pixdraft.app"
+          ln -s /Applications "$RUNNER_TEMP/dmg/Applications"
+          hdiutil create -format UDZO -volname Pixdraft -srcfolder "$RUNNER_TEMP/dmg" dist/Pixdraft-macos-universal.dmg
+
+      - name: Windows x64 installer
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          flutter build windows --release --build-name $env:VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bundle = 'build/windows/x64/runner/Release'
+          # Existing tags can still build the previous executable name.
+          if (Test-Path "$bundle/imagegen.exe" -PathType Leaf) {
+            Rename-Item "$bundle/imagegen.exe" 'Pixdraft.exe'
+          }
+          if (!(Test-Path "$bundle/Pixdraft.exe" -PathType Leaf) -or
+              !(Test-Path "$bundle/flutter_windows.dll" -PathType Leaf) -or
+              !(Test-Path "$bundle/data" -PathType Container)) {
+            throw 'The Windows bundle is incomplete.'
+          }
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $visualStudio = & $vswhere -latest -property installationPath
+          $runtimeVersion = Get-Content "$visualStudio/VC/Auxiliary/Build/Microsoft.VCRedistVersion.default.txt"
+          $runtime = "$visualStudio/VC/Redist/MSVC/$($runtimeVersion.Trim())/x64/Microsoft.VC143.CRT"
+          foreach ($dll in @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')) {
+            Copy-Item "$runtime/$dll" -Destination $bundle
+          }
+          New-Item -ItemType Directory -Path dist | Out-Null
+          $iscc = "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe"
+          & $iscc '/Qp' "/DPixdraftVersion=$env:VERSION" "/DBundleDir=$((Resolve-Path $bundle).Path)" `
+            "/DAppIcon=$((Resolve-Path 'windows/runner/resources/app_icon.ico').Path)" `
+            "/O$((Resolve-Path 'dist').Path)" 'release-config/windows/installer/Pixdraft.iss'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path 'dist/Pixdraft-windows-x64-setup.exe' -PathType Leaf)) {
+            throw 'The Windows installer was not generated.'
+          }
+
+      - name: Ubuntu 24.04 DEB
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libsecret-1-dev liblzma-dev
+          flutter build linux --release --build-name "$VERSION"
+          bundle=build/linux/x64/release/bundle
+          test -x "$bundle/imagegen"
+          root="$RUNNER_TEMP/deb"
+          mkdir -p dist "$root"/{DEBIAN,opt/pixdraft,usr/bin,usr/share/applications,usr/share/doc/pixdraft,usr/share/icons/hicolor/1024x1024/apps}
+          cp -a "$bundle/." "$root/opt/pixdraft/"
+          ln -s /opt/pixdraft/imagegen "$root/usr/bin/pixdraft"
+          install -m 644 LICENSE "$root/usr/share/doc/pixdraft/copyright"
+          install -m 644 assets/branding/app-icon.png "$root/usr/share/icons/hicolor/1024x1024/apps/com.dinosaur.imagegen.png"
+          cat > "$root/usr/share/applications/com.dinosaur.imagegen.desktop" <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Pixdraft
+          Comment=Local workspace for AI image generation
+          Exec=pixdraft
+          Icon=com.dinosaur.imagegen
+          Terminal=false
+          Categories=Graphics;
+          EOF
+          cat > "$root/DEBIAN/control" <<EOF
+          Package: pixdraft
+          Version: $VERSION
+          Section: graphics
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Pixdraft <HakimYu@users.noreply.github.com>
+          Homepage: https://github.com/HakimYu/Pixdraft
+          Depends: libatk1.0-0t64, libc6, libcairo-gobject2, libcairo2, libepoxy0, libfontconfig1, libgcc-s1, libgdk-pixbuf-2.0-0, libglib2.0-0t64, libgtk-3-0t64, libharfbuzz0b, libpango-1.0-0, libpangocairo-1.0-0, libsecret-1-0, libstdc++6, zlib1g
+          Recommends: gnome-keyring
+          Description: Local workspace for AI image generation
+           Generate, organize and edit images using your own API providers.
+          EOF
+          dpkg-deb --root-owner-group --build "$root" dist/Pixdraft-linux-x64.deb
+
+      - name: Web deployable ZIP
+        if: matrix.platform == 'web'
+        run: |
+          flutter build web --release --build-name "$VERSION" --no-wasm-dry-run
+          test -s build/web/index.html
+          test -s build/web/sqflite_sw.js
+          test -s build/web/sqlite3.wasm
+          mkdir -p dist
+          (cd build/web && zip -qr ../../dist/Pixdraft-web.zip .)
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+
+  publish:
+    name: Update GitHub Release
+    needs: [source, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.source.outputs.tag }}
+      COMMIT: ${{ needs.source.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Sign packages and update manifest
+        env:
+          UPDATE_SIGNING_KEY_BASE64: ${{ secrets.UPDATE_SIGNING_KEY_BASE64 }}
+          UPDATE_SIGNING_PASSWORD: ${{ secrets.UPDATE_SIGNING_PASSWORD }}
+          LINUX_GPG_PRIVATE_KEY: ${{ secrets.LINUX_GPG_PRIVATE_KEY }}
+          LINUX_GPG_PASSPHRASE: ${{ secrets.LINUX_GPG_PASSPHRASE }}
+        run: |
+          : "${UPDATE_SIGNING_KEY_BASE64:?Set UPDATE_SIGNING_KEY_BASE64}"
+          : "${UPDATE_SIGNING_PASSWORD:?Set UPDATE_SIGNING_PASSWORD}"
+          : "${LINUX_GPG_PRIVATE_KEY:?Set LINUX_GPG_PRIVATE_KEY}"
+          for name in android-{universal,arm64-v8a,armeabi-v7a,x86_64}.apk ios-unsigned.ipa macos-universal.dmg windows-x64-setup.exe linux-x64.deb web.zip; do
+            test -s "dist/Pixdraft-$name"
+          done
+          umask 077
+          signing_dir=$(mktemp -d)
+          trap 'rm -rf "$signing_dir"' EXIT
+          printf '%s' "$UPDATE_SIGNING_KEY_BASE64" | base64 --decode > "$signing_dir/update-release.pem"
+          printf '%s\n' "$UPDATE_SIGNING_PASSWORD" > "$signing_dir/update-release.pass"
+          pubkey=$(openssl pkey -in "$signing_dir/update-release.pem" -passin "file:$signing_dir/update-release.pass" -pubout -outform DER | tail -c 32 | xxd -p -c 32)
+          grep -Fq "'$pubkey'" lib/features/updates/app_updates.dart
+
+          export GNUPGHOME="$signing_dir/gnupg"
+          mkdir -m 700 "$GNUPGHOME"
+          printf '%s\n' "$LINUX_GPG_PRIVATE_KEY" | gpg --batch --import
+          linux_key=3509BEE31D8335D807799B143C655ED477ADF5C7
+          gpg --batch --armor --export "$linux_key" > dist/Pixdraft-linux-release-public.asc
+          test -s dist/Pixdraft-linux-release-public.asc
+          printf '%s\n' "$LINUX_GPG_PASSPHRASE" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 \
+            --local-user "$linux_key" --armor --detach-sign dist/Pixdraft-linux-x64.deb
+          gpg --batch --verify dist/Pixdraft-linux-x64.deb.asc dist/Pixdraft-linux-x64.deb
+
+          notes="$RUNNER_TEMP/release-notes.md"
+          if ! gh release view "$TAG" --json body --jq '.body // ""' > "$notes"; then
+            gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f "tag_name=$TAG" --jq '.body' > "$notes"
+          fi
+          python3 tool/sign_update.py "$TAG" "$notes" --out dist --signing-dir "$signing_dir" \
+            --android dist/Pixdraft-android-arm64-v8a.apk \
+            --android dist/Pixdraft-android-armeabi-v7a.apk \
+            --android dist/Pixdraft-android-universal.apk \
+            --android dist/Pixdraft-android-x86_64.apk \
+            --macos dist/Pixdraft-macos-universal.dmg \
+            --linux dist/Pixdraft-linux-x64.deb \
+            --windows dist/Pixdraft-windows-x64-setup.exe
+
+      - name: Publish or replace release assets
+        run: |
+          ref="refs/tags/$TAG"
+          refs=$(git ls-remote --exit-code origin "$ref" "$ref^{}")
+          commit=$(awk -v ref="$ref" '$2==ref {tag=$1} $2==ref"^{}" {commit=$1} END {print commit ? commit : tag}' <<< "$refs")
+          if [[ "$commit" != "$COMMIT" ]]; then
+            echo 'The release tag moved during the build. Run the workflow again for its current commit.' >&2
+            exit 1
+          fi
+          if ! draft=$(gh release view "$TAG" --json isDraft --jq '.isDraft'); then
+            gh release create "$TAG" --verify-tag --draft --title "Pixdraft $TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
+            draft=true
+          fi
+          gh release upload "$TAG" dist/Pixdraft-* --clobber
+          gh release upload "$TAG" dist/pixdraft-update.json dist/pixdraft-update.json.sig --clobber
+          if [[ "$draft" == true ]]; then
+            gh release edit "$TAG" --draft=false
+          fi

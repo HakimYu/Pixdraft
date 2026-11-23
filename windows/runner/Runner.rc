@@ -92,9 +92,9 @@ BEGIN
             VALUE "CompanyName", "com.dinosaur" "\0"
             VALUE "FileDescription", "Pixdraft" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "imagegen" "\0"
+            VALUE "InternalName", "Pixdraft" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 com.dinosaur. All rights reserved." "\0"
-            VALUE "OriginalFilename", "imagegen.exe" "\0"
+            VALUE "OriginalFilename", "Pixdraft.exe" "\0"
             VALUE "ProductName", "Pixdraft" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
