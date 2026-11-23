@@ -12,6 +12,8 @@ import 'features/plugins/plugins_page.dart';
 import 'features/gallery/error_log_page.dart';
 import 'features/gallery/categories_page.dart';
 import 'features/providers/providers_page.dart';
+import 'features/updates/app_updates.dart';
+import 'features/updates/update_page.dart';
 import 'models/models.dart';
 import 'plugins/plugin_registry.dart';
 import 'platform/background_tasks.dart';
@@ -207,6 +209,9 @@ class _StudioHomeState extends State<StudioHome> with WidgetsBindingObserver {
   StreamSubscription<void>? _changes;
   PluginRegistry? _registry;
   Future<PluginRegistry>? _loadingPlugins;
+  late final _updates = AppUpdates(widget.store);
+  late final _version = installedVersion();
+  bool _checkingAutomatically = false;
 
   /// 插件运行时按需加载；失败不缓存，下次操作可以重试。
   Future<PluginRegistry> _plugins() async {
@@ -244,6 +249,7 @@ class _StudioHomeState extends State<StudioHome> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _changes = BackgroundTasks.changes.listen((_) => widget.store.refresh());
     unawaited(_plugins().then<void>((_) {}).catchError((Object _) {}));
+    if (!kIsWeb) WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_checkForUpdate()));
   }
 
   @override
@@ -251,12 +257,43 @@ class _StudioHomeState extends State<StudioHome> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_changes?.cancel());
     unawaited(_registry?.dispose() ?? Future<void>.value());
+    if (!kIsWeb) _updates.close();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) widget.store.refresh();
+    if (state == AppLifecycleState.resumed) {
+      widget.store.refresh();
+      if (!kIsWeb) unawaited(_checkForUpdate());
+    }
+  }
+
+  Future<void> _checkForUpdate() async {
+    if (!mounted || _checkingAutomatically) return;
+    _checkingAutomatically = true;
+    try {
+      final preferences = UpdatePreferences(await widget.store.setting(updateSettingsKey));
+      if (!preferences.automaticCheck || !mounted) return;
+      final last = DateTime.tryParse((await widget.store.setting('appUpdateLastCheck'))?['time'] as String? ?? '');
+      final now = DateTime.now();
+      if (last != null && !last.isAfter(now) && now.difference(last) < const Duration(hours: 1)) return;
+      final version = await _version;
+      if (version == null || !mounted) return;
+      await widget.store.saveSetting('appUpdateLastCheck', {'time': now.toIso8601String()});
+      final result = await _updates.check(version, preferences);
+      if (!mounted || result.release == null || ModalRoute.of(context)?.isCurrent != true) return;
+      final latest = UpdatePreferences(await widget.store.setting(updateSettingsKey));
+      if (!mounted || !latest.automaticCheck || latest.mode != preferences.mode || latest.host != preferences.host ||
+          ModalRoute.of(context)?.isCurrent != true) {
+        return;
+      }
+      await showUpdate(context, _updates, version, result.release!, preferences);
+    } on Exception {
+      // 手动检查会显示结果，自动检查失败不打扰创作。
+    } finally {
+      _checkingAutomatically = false;
+    }
   }
 
   void _providers() => Navigator.of(context).push(
@@ -449,22 +486,38 @@ class _StudioHomeState extends State<StudioHome> with WidgetsBindingObserver {
                     );
                   },
                 ),
+                if (!kIsWeb) ListTile(
+                  leading: const Icon(Icons.system_update_outlined),
+                  title: const Text('应用更新'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(context, MaterialPageRoute<void>(
+                    builder: (_) => UpdatePage(updates: _updates, version: _version),
+                  )),
+                ),
                 ListTile(
                   leading: const Icon(Icons.info_outline),
                   title: const Text('关于 Pixdraft'),
-                  subtitle: const Text('本地图片创作工作台 · 1.0.0'),
-                  onTap: () => showAboutDialog(
-                    context: context,
-                    applicationName: 'Pixdraft',
-                    applicationVersion: '1.0.0',
-                    children: [
-                      const Text(
-                        kIsWeb
-                            ? '数据和密钥保存在当前浏览器的站点存储。生成请求直接发给你配置的供应商；服务需允许跨域请求。关闭标签页会中断执行。'
-                            : '创作数据保存在本机，API 密钥保存在系统安全存储。生成请求发送给你配置的供应商。\n\n参考 GPT_Image_Playground（MIT）设计与协议。',
-                      ),
-                    ],
+                  subtitle: FutureBuilder<String?>(
+                    future: _version,
+                    builder: (_, snapshot) => Text(snapshot.data == null
+                        ? '本地图片创作工作台' : '本地图片创作工作台 · ${snapshot.data}'),
                   ),
+                  onTap: () async {
+                    final version = await _version;
+                    if (!context.mounted) return;
+                    showAboutDialog(
+                      context: context,
+                      applicationName: 'Pixdraft',
+                      applicationVersion: version,
+                      children: [
+                        const Text(
+                          kIsWeb
+                              ? '数据和密钥保存在当前浏览器的站点存储。生成请求直接发给你配置的供应商；服务需允许跨域请求。关闭标签页会中断执行。'
+                              : '创作数据保存在本机，API 密钥保存在系统安全存储。生成请求发送给你配置的供应商。\n\n参考 GPT_Image_Playground（MIT）设计与协议。',
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ],
             ),

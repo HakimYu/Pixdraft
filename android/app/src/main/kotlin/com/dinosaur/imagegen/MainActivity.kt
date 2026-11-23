@@ -5,20 +5,42 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Environment
 import android.content.ContentValues
+import android.content.Intent
 import android.os.Build
 import android.provider.MediaStore
+import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.util.concurrent.Executors
 
+class UpdateFileProvider : FileProvider()
 class MainActivity : FlutterActivity() {
     private val mediaExecutor = Executors.newSingleThreadExecutor()
     private var pendingBackup: Pair<List<String>, MethodChannel.Result>? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "image_gen/update")
+            .setMethodCallHandler { call, result ->
+                if (call.method != "openApk") {
+                    result.notImplemented()
+                    return@setMethodCallHandler
+                }
+                val opened = runCatching {
+                    val source = File(requireNotNull(call.argument<String>("path"))).canonicalFile
+                    val updateDir = File(cacheDir, "pixdraft-updates").canonicalFile
+                    require(source.isFile && source.extension.equals("apk", ignoreCase = true) &&
+                        source.parentFile?.parentFile == updateDir)
+                    val uri = FileProvider.getUriForFile(this, "$packageName.updates", source)
+                    startActivity(Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(uri, "application/vnd.android.package-archive")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    })
+                }.isSuccess
+                result.success(opened)
+            }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "image_gen/media")
             .setMethodCallHandler { call, result ->
                 if (call.method == "saveBackupToDownloads") {

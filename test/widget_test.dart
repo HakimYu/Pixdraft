@@ -6,6 +6,8 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:image_gen/data/studio_store.dart';
 import 'package:image_gen/main.dart';
 import 'package:image_gen/models/models.dart';
+import 'package:image_gen/features/updates/app_updates.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:sqflite/sqflite.dart';
 
 class _UnusedDatabase implements Database {
@@ -16,10 +18,17 @@ class _UnusedDatabase implements Database {
 class _NavigationStore extends StudioStore {
   _NavigationStore({this.theme}) : super(_UnusedDatabase(), Directory.systemTemp);
   final String? theme;
+  Map<String, dynamic> _updates = {'automaticCheck': false};
   @override
-  Future<Map<String, dynamic>?> setting(String key) async => key == 'appearance' ? {'theme': theme} : null;
+  Future<Map<String, dynamic>?> setting(String key) async => switch (key) {
+    'appearance' => {'theme': theme},
+    updateSettingsKey => _updates,
+    _ => null,
+  };
   @override
-  Future<void> saveSetting(String key, Map<String, dynamic> value) async {}
+  Future<void> saveSetting(String key, Map<String, dynamic> value) async {
+    if (key == updateSettingsKey) _updates = value;
+  }
   @override
   Future<List<ProviderConfig>> providers() async => [];
   @override
@@ -29,6 +38,10 @@ class _NavigationStore extends StudioStore {
 }
 
 void main() {
+  setUp(() => PackageInfo.setMockInitialValues(
+    appName: 'Pixdraft', packageName: 'com.dinosaur.imagegen', version: '1.0.0',
+    buildNumber: '2', buildSignature: '',
+  ));
   testWidgets('应用入口不抢占返回键，展开的生图面板先收起', (tester) async {
     final store = _NavigationStore();
     await tester.pumpWidget(ImageStudioApp(store: store));
@@ -66,17 +79,32 @@ void main() {
     });
     await tester.pumpWidget(ImageStudioApp(store: store));
     await tester.pumpAndSettle();
-    expect(find.text('生图'), findsOneWidget);
-    expect(tester.widget<MaterialApp>(find.byType(MaterialApp)).title, '生图');
+    expect(tester.widget<MaterialApp>(find.byType(MaterialApp)).title, 'Pixdraft');
     expect(find.byType(NavigationBar), findsNothing);
     expect(find.byKey(const ValueKey('open-composer')), findsOneWidget);
     await tester.tap(find.byTooltip('设置'));
     await tester.pumpAndSettle();
     expect(find.text('供应商与模型'), findsOneWidget);
-    await tester.ensureVisible(find.text('关于生图'));
-    await tester.tap(find.text('关于生图'));
+    await tester.ensureVisible(find.text('应用更新'));
+    await tester.tap(find.text('应用更新'));
     await tester.pumpAndSettle();
-    expect(tester.widget<AboutDialog>(find.byType(AboutDialog)).applicationName, '生图');
+    expect(find.text('检查更新'), findsOneWidget);
+    expect(find.text('1.0.0'), findsOneWidget);
+    await tester.tap(find.text('自动选择'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('指定镜像').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(find.text('自动选择'), findsOneWidget);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('关于 Pixdraft'));
+    await tester.tap(find.text('关于 Pixdraft'));
+    await tester.pumpAndSettle();
+    final about = tester.widget<AboutDialog>(find.byType(AboutDialog));
+    expect(about.applicationName, 'Pixdraft');
+    expect(about.applicationVersion, '1.0.0');
     await tester.binding.handlePopRoute();
     await tester.pumpAndSettle();
     await tester.tap(find.text('供应商与模型'));

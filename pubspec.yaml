@@ -54,7 +54,8 @@ dependencies:
   path: ^1.9.1
   sqflite_common: ^2.5.17
   sqflite_common_ffi_web: ^1.2.2
-
+  package_info_plus: ^10.2.2
+  url_launcher: ^6.3.3
 dev_dependencies:
   flutter_test:
     sdk: flutter
