@@ -4,6 +4,10 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+val releaseSigningDir = rootProject.file("../../pixdraft-signing")
+val releasePasswordFile = releaseSigningDir.resolve("android-release.pass")
+val releasePassword = providers.fileContents(layout.file(providers.provider { releasePasswordFile })).asText
+
 android {
     namespace = "com.dinosaur.imagegen"
     // flutter_local_notifications 要求 compileSdk 37。
@@ -24,19 +28,24 @@ android {
         minSdk = flutter.minSdkVersion
         multiDexEnabled = true
         targetSdk = flutter.targetSdkVersion
-        // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
-        // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)
-        // You can force using the value of versionCode by specifying the `-P force-version-code-ignoring-abi=true`
-        // flag during build.
+        // 通用包和按 ABI 拆分的包使用相同版本号，可相互覆盖安装。
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = releaseSigningDir.resolve("android-release.p12")
+            storeType = "PKCS12"
+            storePassword = releasePassword.orNull?.trim().orEmpty()
+            keyAlias = "pixdraft"
+            keyPassword = storePassword
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 }
